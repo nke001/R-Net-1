@@ -1,5 +1,6 @@
 import tensorflow as tf
 from tensorflow.python.ops.rnn_cell import GRUCell
+from tensorflow.contrib.distributions import Bernoulli
 
 INF = 1e30
 
@@ -55,6 +56,156 @@ class cudnn_gru:
             res = outputs[-1]
         res = tf.transpose(res, [1, 0, 2])
         return res
+
+
+
+
+class lstm_rnn:
+
+    def __init__(self, num_layers, num_units, batch_size, input_size, keep_prob=1.0, is_train=None, scope=None):
+       
+        self.units = num_units
+        self.num_layers = num_layers
+        self.params = []
+        self.lstms = []
+        self.inits = []
+        self.dropout_mask = []
+        for layer in range(num_layers):
+            input_size_ = input_size if layer == 0 else 2 * num_units
+            lstm_fw = tf.contrib.cudnn_rnn.CudnnLSTM(
+                 num_layers=1, num_units=num_units, input_size =input_size)
+            
+            lstm_bw = tf.contrib.cudnn_rnn.CudnnLSTM(
+                 num_layers=1, num_units=num_units, input_size=input_size)
+            
+            param_fw = tf.Variable(tf.random_uniform(
+                [gru_fw.params_size()], -0.1, 0.1), validate_shape=False)
+            
+            param_bw = tf.Variable(tf.random_uniform(
+                [gru_bw.params_size()], -0.1, 0.1), validate_shape=False)
+            
+            init_fw_c = tf.Variable(tf.zeros([1, batch_size, num_units]))
+            init_fw_h = tf.Variable(tf.zeros([1, batch_size, num_units]))
+            init_bw_h = tf.Variable(tf.zeros([1, batch_size, num_units]))
+            init_bw_c = tf.Variable(tf.zeros([1, batch_size, num_units]))
+
+            mask_fw = dropout(tf.ones([1, batch_size, input_size_], dtype=tf.float32),
+                              keep_prob=keep_prob, is_train=is_train, mode=None)
+            mask_bw = dropout(tf.ones([1, batch_size, input_size_], dtype=tf.float32),
+                              keep_prob=keep_prob, is_train=is_train, mode=None)
+            
+            self.lstms.append((lstm_fw, lstm_bw, ))
+            self.params.append((param_fw, param_bw, ))
+            self.inits.append((init_fw_h, init_fw_c, init_bw_h, init_bw_c ))
+            self.dropout_mask.append((mask_fw, mask_bw, ))
+
+    def __call__(self, inputs, seq_len, keep_prob=1.0, is_train=None, concat_layers=True):
+        outputs = [tf.transpose(inputs, [1, 0, 2])]
+        for layer in range(self.num_layers):
+            gru_fw, gru_bw = self.lstms[layer]
+            param_fw, param_bw = self.params[layer]
+            init_fw_h, init_fw_c, init_bw_h, init_bw_c = self.inits[layer]
+            mask_fw, mask_bw = self.dropout_mask[layer]
+            with tf.variable_scope("fw"):
+                out_fw, _, _ = gru_fw(outputs[-1] * mask_fw, input_h=init_fw_h, input_c=init_fw_c, params=param_fw)
+            
+            with tf.variable_scope("bw"):    
+                inputs_bw = tf.reverse_sequence(
+                    outputs[-1] * mask_bw, seq_lengths=seq_len, seq_dim=0, batch_dim=1)
+                
+                out_bw, _, _= gru_bw(inputs_bw,  input_h=init_bw_h, input_c=init_bw_c, params=param_bw)
+
+                out_bw = tf.reverse_sequence(
+                    out_bw, seq_lengths=seq_len, seq_dim=0, batch_dim=1)
+            outputs.append(tf.concat([out_fw, out_bw], axis=2))
+        if concat_layers:
+            res = tf.concat(outputs[1:], axis=2)
+        else:
+            res = outputs[-1]
+        res = tf.transpose(res, [1, 0, 2])
+        return res
+
+
+
+
+class hrnn_gru:
+
+    def __init__(self, num_layers, num_units, batch_size, input_size, keep_prob=1.0, is_train=None, scope=None):
+        self.num_layers = num_layers
+        self.grus = []
+        self.params = []
+        self.inits = []
+        self.dropout_mask = []
+        print('using hrnn gru')
+        
+        self.b1_w = tf.Variable(tf.ones([1, num_units, num_units]))
+        self.b2_w = tf.Variable(tf.ones([1, num_units, 1]))
+
+        import ipdb; ipdb.set_trace()
+        for layer in range(num_layers):
+            input_size_ = input_size if layer == 0 else 2 * num_units
+            gru_fw = tf.contrib.cudnn_rnn.CudnnGRU(
+                num_layers=1, num_units=num_units, input_size=input_size_)
+            gru_bw = tf.contrib.cudnn_rnn.CudnnGRU(
+                num_layers=1, num_units=num_units, input_size=input_size_)
+            param_fw = tf.Variable(tf.random_uniform(
+                [gru_fw.params_size()], -0.1, 0.1), validate_shape=False)
+            
+            param_bw = tf.Variable(tf.random_uniform(
+                [gru_bw.params_size()], -0.1, 0.1), validate_shape=False)
+            
+            
+            init_fw = tf.Variable(tf.zeros([1, batch_size, num_units]))
+            init_bw = tf.Variable(tf.zeros([1, batch_size, num_units]))
+            mask_fw = dropout(tf.ones([1, batch_size, input_size_], dtype=tf.float32),
+                              keep_prob=keep_prob, is_train=is_train, mode=None)
+            mask_bw = dropout(tf.ones([1, batch_size, input_size_], dtype=tf.float32),
+                              keep_prob=keep_prob, is_train=is_train, mode=None)
+            self.grus.append((gru_fw, gru_bw, ))
+            self.params.append((param_fw, param_bw, ))
+            self.inits.append((init_fw, init_bw, ))
+            self.dropout_mask.append((mask_fw, mask_bw, ))
+
+    def __call__(self, inputs, seq_len, keep_prob=1.0, is_train=None, concat_layers=True):
+        
+        outputs = [tf.transpose(inputs, [1, 0, 2])]
+        import ipdb; ipdb.set_trace()
+        
+        # only 2 layers, first layer is bidirectional
+        # second layer gets output from first layer 
+        
+        for layer in range(self.num_layers):
+            gru_fw, gru_bw = self.grus[layer]
+            param_fw, param_bw = self.params[layer]
+            init_fw, init_bw = self.inits[layer]
+            mask_fw, mask_bw = self.dropout_mask[layer]
+            with tf.variable_scope("fw"):
+                out_fw, _ = gru_fw(outputs[-1] * mask_fw, init_fw, param_fw)
+                if layer == 0:                    
+                    import ipdb;ipdb.set_trace()
+                    b1 = tf.nn.relu(tf.matmul(out_fw, self.b1_w))
+                    bnd = tf.nn.sigmoid(tf.matmul(b1, self.b2_w))
+                    gates = Bernoulli(bnd)
+                    
+                    # TODO: initially just take the hidden state from the last layer and try to predict the boundary
+                    #bnd_input = tf.concat([out_fw, ])
+                    #h1_out = tf.
+            with tf.variable_scope("bw"):
+                inputs_bw = tf.reverse_sequence(
+                    outputs[-1] * mask_bw, seq_lengths=seq_len, seq_dim=0, batch_dim=1)
+                out_bw, _ = gru_bw(inputs_bw, init_bw, param_bw)
+                out_bw = tf.reverse_sequence(
+                    out_bw, seq_lengths=seq_len, seq_dim=0, batch_dim=1)
+            outputs.append(tf.concat([out_fw, out_bw], axis=2))
+        if concat_layers:
+            res = tf.concat(outputs[1:], axis=2)
+        else:
+            res = outputs[-1]
+        res = tf.transpose(res, [1, 0, 2])
+        return res
+
+
+
 
 
 class native_gru:
